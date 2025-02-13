@@ -1,101 +1,57 @@
-from llama_index.core import SimpleDirectoryReader
-from llama_index.readers.file import PandasCSVReader
-from llama_index.llms.ollama import Ollama
+from fastapi import FastAPI,Request,Query
+from pydantic import BaseModel
 
-from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
+#from civitas_poc8 import main
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, PromptTemplate, StorageContext, load_index_from_storage
+from llama_index.core import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.llms.ollama import Ollama
 from prompts import context
 
-from llama_index.core import Settings
+app = FastAPI()
 
-import os, time
+@app.get("/")
+async def root():
+    return {"message": "Hello, world!"}
 
+class ChatInput(BaseModel):
+    query: str
+    university_name: str
 
-def main():
+@app.post("/query/")
+async def query_llm(chat: ChatInput):
+    """
+    Endpoint para hacer consultas al LLM.
+    """
+    try:
+        llm = Ollama(model="mistral", request_timeout=30.0)
 
-    llm = Ollama(model="mistral", request_timeout=300.0)
+        Settings.llm = llm
+        Settings.chunk_size = 512
+        Settings.chunk_overlap = 50
+        Settings.embed_model = HuggingFaceEmbedding(
+            model_name="sentence-transformers/all-mpnet-base-v2"  # all-MiniLM-L6-v2
+        )
+        storage_dir = "storage_pdf"
 
-    Settings.llm = llm
-    Settings.embed_model = HuggingFaceEmbedding(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-
-    #if "OPENAI_API_KEY" in os.environ:
-    #    del os.environ["OPENAI_API_KEY"]
-
-
-    storage_dir = "storage"
-
-    parser=PandasCSVReader()
-    fe={".csv":parser}
-
-
-    embedding = HuggingFaceEmbedding(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-    )
-
-    start_time2 = time.time()
-    if os.path.exists(storage_dir):
-        print("🔄 Cargando índice guardado...")
-        storage_context = StorageContext.from_defaults(persist_dir=storage_dir)
-        index = load_index_from_storage(storage_context)
-    else:
-        print("📥 Cargando archivos desde el directorio...")
-        loader = SimpleDirectoryReader("./data/civitas", file_extractor=fe)
-        docs = loader.load_data(num_workers=4)
-
-        index = VectorStoreIndex.from_documents(
-            docs,
-            embed_model=embedding,
-            show_progress=True,
-            num_workers=4
+        embedding = HuggingFaceEmbedding(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
         )
 
-        index.storage_context.persist(persist_dir=storage_dir)
+        prompt_template = PromptTemplate(context)
+        prompt_context = prompt_template.format(university_name=chat.university_name)
 
-    #retriever = index.as_retriever(similarity_top_k=3)
-    #retrieved_docs = retriever.retrieve("Documents are separated according kind of historical performance of students and it can serve as reference to give recommendations a students with similar performance")
-    #content = "\n\n".join([doc.text for doc in retrieved_docs])
+        storage_context = StorageContext.from_defaults(persist_dir=storage_dir)
+        vector_index = load_index_from_storage(storage_context)
 
-    query_engine = index.as_query_engine(llm=llm,embed_model=embedding,context=context)#,content=f"{content}"
+        query_engine = vector_index.as_query_engine(
+            llm=llm,
+            embed_model=embedding,
+            context=prompt_context)
+        response = query_engine.query(chat.query)
+        #response = main().query(prompt)
+        #response = llm.complete(prompt)  # Llama al modelo LLM
+        return {"response": response}
+    except Exception as e:
+        return {"error": str(e)}
 
-    end_time2 = time.time()
-    elapsed_time2 = end_time2 - start_time2
-    print(f"Elapsed time: {elapsed_time2} seconds (Indexing Manage)")
-
-    while (prompt := input("Enter a prompt (q to quit): ")) != "q":
-        retries = 0
-
-        while retries < 3:
-            try:
-                start_time3 = time.time()
-                #query = "¿Puedes enumerar 4 recomendaciones para el alumno con codigo 244277?"
-                response = query_engine.query(prompt)
-                print(response)
-
-                end_time3 = time.time()
-                elapsed_time3 = end_time3 - start_time3
-                print(f"Elapsed time: {elapsed_time3} seconds (Model Response Query)")
-
-                break
-            except Exception as e:
-                retries += 1
-                print(f"Error occured, retry #{retries}:", e)
-
-        if retries >= 3:
-            print("Unable to process request, try again...")
-            continue
-
-if __name__ == "__main__":
-    start_time = time.time()
-    main()
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"Elapsed time: {elapsed_time} seconds")
-
-
-
-#for doc in docs:
-#    if doc.metadata['file_type']=="text/csv":
-#        print(doc)
